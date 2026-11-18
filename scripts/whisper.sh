@@ -11,7 +11,7 @@ start_whisper() {
     info "Starting Whisper on $(whisper_url) with $WHISPER_MODEL"
     (
       cd "$WHISPER_DIR"
-      WHISPER_API_TOKEN="$REMOTE_TRANSCRIBER_API_KEY" WHISPER_MODEL="$WHISPER_MODEL" \
+      WHISPER_API_TOKEN="$TRANSCRIPTION_SERVICE_TOKEN" WHISPER_MODEL="$WHISPER_MODEL" \
         nohup .venv/bin/uvicorn server:app --host "${WHISPER_HOST:-127.0.0.1}" --port "${WHISPER_PORT:-8083}" \
         >> "$LOG_DIR/whisper.log" 2>&1 < /dev/null &
       echo $! > "$RUN_DIR/whisper.pid"

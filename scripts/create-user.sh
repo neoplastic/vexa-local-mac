@@ -7,7 +7,7 @@ load_env
 EMAIL="${1:-}"
 [ -n "$EMAIL" ] || die "Usage: make user EMAIL=you@example.com"
 
-python3 - "$EMAIL" "${2:-}" "http://localhost:${ADMIN_API_HOST_PORT}" "$ADMIN_API_TOKEN" <<'PY'
+python3 - "$EMAIL" "${2:-}" "http://localhost:${ADMIN_API_PORT}" "$ADMIN_TOKEN" <<'PY'
 import json, sys, urllib.request, urllib.error
 
 email, name, base, token = sys.argv[1:5]
@@ -21,7 +21,8 @@ def call(method, path, body=None):
 
 try:
     user = call("POST", "/admin/users", {"email": email, "name": name or None, "max_concurrent_bots": 3})
-    tok = call("POST", f"/admin/users/{user['id']}/tokens")
+    # bot = send/stop bots, tx = read transcripts
+    tok = call("POST", f"/admin/users/{user['id']}/tokens?scopes=bot,tx")
 except urllib.error.HTTPError as e:
     sys.exit(f"Admin API error {e.code}: {e.read().decode(errors='replace')}")
 except urllib.error.URLError as e:

@@ -11,7 +11,7 @@ say -o "$tmp/t.aiff" "Hello, this is a test of local meeting transcription."
 ffmpeg -loglevel error -y -i "$tmp/t.aiff" -ar 16000 -ac 1 "$tmp/t.wav"
 
 info "From the Mac"
-"$WHISPER_DIR/.venv/bin/python" - "$(whisper_url)" "$REMOTE_TRANSCRIBER_API_KEY" "$tmp/t.wav" <<'PY'
+"$WHISPER_DIR/.venv/bin/python" - "$(whisper_url)" "$TRANSCRIPTION_SERVICE_TOKEN" "$tmp/t.wav" <<'PY'
 import sys, time, json, urllib.request, uuid
 url, key, path = sys.argv[1:4]
 boundary = uuid.uuid4().hex
@@ -30,6 +30,6 @@ PY
 
 info "From inside a container (via host.docker.internal)"
 docker run --rm --add-host host.docker.internal:host-gateway -v "$tmp:/a:ro" curlimages/curl:8.10.1 \
-  -sS --max-time 60 -H "Authorization: Bearer $REMOTE_TRANSCRIBER_API_KEY" \
-  -F file=@/a/t.wav -F model=default -F response_format=json "$REMOTE_TRANSCRIBER_URL"
+  -sS --max-time 60 -H "Authorization: Bearer $TRANSCRIPTION_SERVICE_TOKEN" \
+  -F file=@/a/t.wav -F model=default -F response_format=json "${TRANSCRIPTION_SERVICE_URL%/}/v1/audio/transcriptions"
 echo

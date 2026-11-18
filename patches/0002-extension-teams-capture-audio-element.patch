@@ -1,0 +1,178 @@
+diff --git a/clients/extension/src/background.ts b/clients/extension/src/background.ts
+index a0aef401..9ab9eb5c 100644
+--- a/clients/extension/src/background.ts
++++ b/clients/extension/src/background.ts
+@@ -67,7 +67,10 @@ let tabStreamId: string | null = null;
+  *  diarizes (channel 999, via the offscreen tabCapture), as opposed to Google
+  *  Meet's per-participant in-page <audio> capture. Zoom and Teams additionally
+  *  feed speaker-name hints from their inpage zoom-/msteams-speakers DOM. */
+-const MIXED = new Set(['youtube', 'zoom', 'teams']);
++// Teams is NOT here: Chrome's tab capture yields digital silence for the Teams web
++// app, so the inpage captures Teams' remote <audio> element (still channel 999 →
++// the desktop's mixed pipeline) and the local mic, via BEGIN_CAPTURE.
++const MIXED = new Set(['youtube', 'zoom']);
+ const isMixed = (p: string | null | undefined): boolean => !!p && MIXED.has(p);
+ 
+ // ── P21 capture liveness: state is EARNED by observed frames, not the Start command.
+diff --git a/clients/extension/src/inpage.ts b/clients/extension/src/inpage.ts
+index b4a41e2c..60c0d252 100644
+--- a/clients/extension/src/inpage.ts
++++ b/clients/extension/src/inpage.ts
+@@ -8,7 +8,11 @@
+  * postMessage the chunk to the content script, which relays it to the background
+  * service worker's WebSocket (capture.v1 → the desktop ingest).
+  *
+- * ZOOM / MS TEAMS (MIXED lane): the inpage does NOT capture audio — the offscreen
++ * MS TEAMS: the inpage captures the local mic ("You", 1000) and Teams' server-mixed
++ * remote <audio> element (channel 999, the mixed lane), plus the msteams-speakers
++ * hints below. Tab capture is not used: it yields silence for the Teams web app.
++ *
++ * ZOOM (MIXED lane): the inpage does NOT capture audio — the offscreen
+  * document captures the whole tab's mixed audio (chrome.tabCapture → channel 999,
+  * diarized by the desktop's mixed pipeline). The inpage's only job for these is to
+  * emit speaker-name HINTS from the zoom-speakers / msteams-speakers DOM
+@@ -32,6 +36,7 @@ import {
+ import { createZoomSpeakers, ZoomSpeakers, createZoomChat, ZoomChat } from '@vexa/zoom-capture';
+ import { createTeamsSpeakers, TeamsSpeakers, createTeamsChat, TeamsChat } from '@vexa/teams-capture';
+ import { createRecordingTap, type RecordingTap } from '@vexa/record-chunker';
++import { type MixedAudioCapture } from '@vexa/mixed-capture-core';
+ 
+ (() => {
+   const TAG = '[vexa-inpage]';
+@@ -172,8 +177,100 @@ import { createRecordingTap, type RecordingTap } from '@vexa/record-chunker';
+     }
+   }
+ 
++  // Teams remote audio. Chrome's tab capture of the Teams web app is digital
++  // silence, but Teams plays the (server-mixed) call audio through a page <audio>
++  // element whose srcObject is the live WebRTC stream. Capture that element's
++  // stream → channel 999, the same mixed lane the desktop diarizes and names from
++  // the msteams-speakers hints. One element at a time; re-pick it if Teams swaps it.
++  const TEAMS_MIXED_INDEX = 999;
++  let teamsAudio: { el: HTMLMediaElement; track: MediaStreamTrack; capture: MixedAudioCapture } | null = null;
++  let teamsScanTimer: number | null = null;
++  let teamsMic: MixedAudioCapture | null = null;
++
++  /**
++   * Capture a live WebRTC track to 16 kHz PCM. The AudioContext runs at the
++   * device-native rate (a 16 kHz context fed a remote WebRTC track renders
++   * silence) and the ScriptProcessor output is downsampled here; no worklet
++   * module, so the Teams page CSP can't block it. If autoplay policy leaves the
++   * context suspended, it resumes on the next click or key press in the page.
++   */
++  function captureTrack(track: MediaStreamTrack, onPcm: (pcm: Float32Array) => void): MixedAudioCapture {
++    const ctx = new AudioContext();
++    const source = ctx.createMediaStreamSource(new MediaStream([track]));
++    const proc = ctx.createScriptProcessor(4096, 1, 1);
++    const ratio = ctx.sampleRate / TARGET_SAMPLE_RATE;
++    let frames = 0, sent = 0, peak = 0;
++    proc.onaudioprocess = (e: AudioProcessingEvent) => {
++      const input = e.inputBuffer.getChannelData(0);
++      frames++;
++      let max = 0;
++      for (let i = 0; i < input.length; i++) { const a = Math.abs(input[i]); if (a > max) max = a; }
++      if (max > peak) peak = max;
++      if (max <= 0.005) return;
++      const out = new Float32Array(Math.floor(input.length / ratio));
++      for (let i = 0; i < out.length; i++) {
++        const start = Math.floor(i * ratio), end = Math.min(input.length, Math.floor((i + 1) * ratio));
++        let sum = 0; for (let j = start; j < end; j++) sum += input[j];
++        out[i] = sum / Math.max(1, end - start);
++      }
++      sent++;
++      onPcm(out);
++    };
++    source.connect(proc);
++    proc.connect(ctx.destination);
++    const resume = () => { if (ctx.state !== 'running') void ctx.resume().catch(() => { /* needs a gesture */ }); };
++    resume();
++    window.addEventListener('pointerdown', resume, true);
++    window.addEventListener('keydown', resume, true);
++    const status = window.setInterval(() => {
++      console.log(`${TAG} [teams-audio] ctx=${ctx.state} rate=${ctx.sampleRate} track=${track.readyState}${track.muted ? '/muted' : ''} buffers=${frames} sent=${sent} peak=${peak.toFixed(3)}`);
++      peak = 0;
++    }, 5000);
++    return {
++      stop(): void {
++        clearInterval(status);
++        window.removeEventListener('pointerdown', resume, true);
++        window.removeEventListener('keydown', resume, true);
++        try { proc.disconnect(); proc.onaudioprocess = null; } catch { /* */ }
++        try { void ctx.close(); } catch { /* */ }
++      },
++    };
++  }
++
++  function liveAudioTrack(el: HTMLMediaElement): MediaStreamTrack | null {
++    const s = (el as any).srcObject;
++    if (!(s instanceof MediaStream)) return null;
++    return s.getAudioTracks().find((t) => t.readyState === 'live') || null;
++  }
++
++  async function scanTeamsAudio(): Promise<void> {
++    if (!running || !isCurrent()) return;
++    if (teamsAudio && teamsAudio.el.isConnected && teamsAudio.track.readyState === 'live'
++        && liveAudioTrack(teamsAudio.el) === teamsAudio.track) return;
++    if (teamsAudio) { teamsAudio.capture.stop(); teamsAudio = null; }
++    const el = Array.from(document.querySelectorAll('audio')).find((a) => !a.paused && liveAudioTrack(a));
++    const track = el ? liveAudioTrack(el) : null;
++    if (!el || !track) return;
++    // Capture only, no re-play: the page keeps playing the element itself.
++    const capture = captureTrack(track, (pcm) => {
++      if (running && isCurrent()) post('audio', { index: TEAMS_MIXED_INDEX, pcm: Array.from(pcm) });
++    });
++    teamsAudio = { el, track, capture };
++    console.log(`${TAG} [teams-audio] capturing the call audio element → channel ${TEAMS_MIXED_INDEX}`);
++  }
++
++  function startTeamsAudio(): void {
++    void scanTeamsAudio();
++    teamsScanTimer = window.setInterval(() => { void scanTeamsAudio(); }, 2000);
++  }
++
++  function stopTeamsAudio(): void {
++    if (teamsScanTimer !== null) { clearInterval(teamsScanTimer); teamsScanTimer = null; }
++    if (teamsAudio) { teamsAudio.capture.stop(); teamsAudio = null; }
++  }
++
+   function streamCount(): number {
+-    return (gmeetCapture ? gmeetCapture.streamCount() : 0) + (micStream ? 1 : 0);
++    return (gmeetCapture ? gmeetCapture.streamCount() : 0) + (micStream ? 1 : 0) + (teamsAudio ? 1 : 0);
+   }
+ 
+   /**
+@@ -185,6 +282,16 @@ import { createRecordingTap, type RecordingTap } from '@vexa/record-chunker';
+     if (window !== window.top) return; // mic belongs to the top frame only
+     try {
+       micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
++      if (isTeamsHost()) {
++        // Teams' page CSP blocks the blob: worklet module; use the worklet-free captor.
++        const track = micStream.getAudioTracks()[0];
++        teamsMic = captureTrack(track, (pcm) => {
++          if (running && isCurrent()) post('audio', { index: MIC_INDEX, pcm: Array.from(pcm) });
++        });
++        post('speakers', { speakers: { [MIC_INDEX]: 'You' } });
++        console.log(`${TAG} microphone capture started ("You", worklet-free)`);
++        return;
++      }
+       const ctx = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
+       const source = ctx.createMediaStreamSource(micStream);
+       // AudioWorklet (audio-thread) — the deprecated ScriptProcessor duplicated
+@@ -251,6 +358,8 @@ import { createRecordingTap, type RecordingTap } from '@vexa/record-chunker';
+       recordingTap.start().catch((e: any) => console.log(`${TAG} recording tap: ${e?.message || e}`));
+     }
+ 
++    if (isTeamsHost() && window === window.top) startTeamsAudio();
++
+     post('capture-started', { streams: streamCount() });
+     console.log(`${TAG} capture started with ${streamCount()} stream(s) (mic + participants)`);
+ 
+@@ -271,6 +380,8 @@ import { createRecordingTap, type RecordingTap } from '@vexa/record-chunker';
+     if (teamsChat) { teamsChat.destroy(); teamsChat = null; (window as any).__vexaTeamsChat = null; }
+     if (recordingTap) { recordingTap.stop().catch(() => { /* */ }); recordingTap = null; }
+     if (gmeetCapture) { gmeetCapture.stop(); gmeetCapture = null; }
++    stopTeamsAudio();
++    if (teamsMic) { teamsMic.stop(); teamsMic = null; }
+     if (countTimer !== null) { clearInterval(countTimer); countTimer = null; }
+     if (micStream) { for (const t of micStream.getTracks()) { try { t.stop(); } catch { /* ignore */ } } micStream = null; }
+     for (const ctx of contexts) { try { ctx.close(); } catch { /* ignore */ } }

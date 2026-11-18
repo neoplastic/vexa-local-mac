@@ -1,0 +1,29 @@
+diff --git a/core/meetings/modules/join/src/googlemeet/humanized/humanizedInteraction.ts b/core/meetings/modules/join/src/googlemeet/humanized/humanizedInteraction.ts
+index a4ccfc2e..f3718d61 100644
+--- a/core/meetings/modules/join/src/googlemeet/humanized/humanizedInteraction.ts
++++ b/core/meetings/modules/join/src/googlemeet/humanized/humanizedInteraction.ts
+@@ -208,7 +208,23 @@ export class HumanizedInteractor {
+     if (m.width <= 0 || m.height <= 0) throw new Error("humanized: element has zero size");
+     const rect = this.rectDevicePx(m);
+ 
+-    const cur = await this.x11.getPointer();
++    // Mocap trajectories travel >= ~52 device px even at their smallest scale. Calibration
++    // can leave the pointer resting on (or right beside) the target, so no trajectory fits;
++    // start from a point a short reach away instead.
++    let cur = await this.x11.getPointer();
++    const cx = (rect.left + rect.right) / 2;
++    const cy = (rect.top + rect.bottom) / 2;
++    const dist = Math.hypot(cx - cur.x, cy - cur.y);
++    this.log(`humanized: pointer ${dist.toFixed(0)}px from target centre`);
++    if (dist < 200) {
++      const reach = 320;
++      const ax = Math.round(cx - reach >= this.offsetX + 10 ? cx - reach : cx + reach);
++      const ay = Math.round(cy - reach * 0.6 >= this.offsetY + 10 ? cy - reach * 0.6 : cy + reach * 0.6);
++      await this.x11.moveAbs(ax, ay);
++      await sleep(80 + Math.random() * 120);
++      cur = await this.x11.getPointer();
++      this.log(`humanized: moved pointer away to (${cur.x},${cur.y}) before approaching`);
++    }
+     let seq = this.engine.findSequenceLandingInRect(cur.x, cur.y, rect);
+     if (!seq) {
+       this.mocapMisses++;
