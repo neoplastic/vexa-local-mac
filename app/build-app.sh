@@ -28,12 +28,22 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key><string>Vexa Local records your microphone when you use Record, and transcribes it on this Mac with Whisper.</string>
     <key>NSAppTransportSecurity</key>
     <dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
 </plist>
 PLIST
 
-# Ad-hoc signature so macOS will launch it locally.
-codesign --force --sign - "$APP"
+# Signing. An ad-hoc signature ("-") changes with every build, so macOS treats each build
+# as a new app and asks again for Microphone and Screen & System Audio Recording.
+# A stable identity keeps those permissions across rebuilds: set VEXA_SIGN_IDENTITY, or
+# create a self-signed code-signing certificate named "Vexa Local Dev" in Keychain Access
+# (Certificate Assistant > Create a Certificate…, type: Code Signing).
+IDENTITY="${VEXA_SIGN_IDENTITY:-}"
+if [[ -z "$IDENTITY" ]] && security find-identity -p codesigning 2>/dev/null | grep -q '"Vexa Local Dev"'; then
+    IDENTITY="Vexa Local Dev"
+fi
+codesign --force --sign "${IDENTITY:--}" "$APP"
+[[ -n "$IDENTITY" ]] && echo "Signed with: $IDENTITY" || echo "Signed ad-hoc (permissions are asked again after each rebuild)."
 echo "Built: $(pwd)/$APP"

@@ -21,7 +21,6 @@ enum DownloadState: Equatable {
 /// Lists MLX Whisper models on Hugging Face, and downloads/deletes them locally.
 @MainActor @Observable
 final class ModelStore {
-    var hubModels: [HubModel] = []
     var hubError: String?
     var isLoadingHub = false
     var repoInfo: [String: RepoInfo] = [:]
@@ -32,40 +31,102 @@ final class ModelStore {
     @ObservationIgnored private var processes: [String: Process] = [:]
     @ObservationIgnored private var infoRequests: Set<String> = []
 
-    func loadHubModels() async {
+    /// Compatible, non-recommended models to show. Filled as repos are checked.
+    var compatibleModels: [HubModel] = []
+    /// Progress of the compatibility check.
+    var checkedCount = 0
+    var totalToCheck = 0
+    var unreachableCount = 0
+    /// Compatible models in the local cache.
+    var downloaded: [CachedModel] = []
+
+    @ObservationIgnored private var listLoaded = false
+    @ObservationIgnored private var allHubModels: [HubModel] = []
+    private static let maxConcurrent = 6
+
+    func refreshDownloaded() {
+        downloaded = HFCache.downloadedModels()
+    }
+
+    /// Lists mlx-community Whisper repos, then keeps only the ones mlx-whisper can load.
+    /// Results are cached for the session. Pass force to start over.
+    func loadHubModels(force: Bool = false) async {
         guard !isLoadingHub else { return }
+        if force { listLoaded = false }
+        refreshDownloaded()
+        if listLoaded && unreachableCount == 0 { return }
         isLoadingHub = true
         defer { isLoadingHub = false }
-        var comps = URLComponents(string: "https://huggingface.co/api/models")!
-        comps.queryItems = [.init(name: "author", value: "mlx-community"), .init(name: "search", value: "whisper"),
-                            .init(name: "sort", value: "downloads"), .init(name: "limit", value: "300")]
-        do {
-            let (data, _) = try await URLSession.shared.data(from: comps.url!)
-            // "-asr-" repos are packaged for mlx-audio / transformers, not mlx-whisper.
-            hubModels = try JSONDecoder().decode([HubModel].self, from: data).filter { !$0.id.contains("-asr-") }
-            hubError = nil
-        } catch {
-            hubError = "Could not reach Hugging Face: \(error.localizedDescription)"
+        if !listLoaded {
+            var comps = URLComponents(string: "https://huggingface.co/api/models")!
+            comps.queryItems = [.init(name: "author", value: "mlx-community"), .init(name: "search", value: "whisper"),
+                                .init(name: "sort", value: "downloads"), .init(name: "limit", value: "300")]
+            do {
+                let (data, _) = try await URLSession.shared.data(from: comps.url!)
+                // "-asr-" repos are packaged for mlx-audio / transformers, not mlx-whisper.
+                allHubModels = try JSONDecoder().decode([HubModel].self, from: data).filter { !$0.id.contains("-asr-") }
+                listLoaded = true
+                hubError = nil
+            } catch {
+                hubError = "Could not reach Hugging Face: \(error.localizedDescription)"
+                return
+            }
         }
+        let recommended = Set(ModelCatalog.recommended.map(\.id))
+        let candidates = allHubModels.filter { !recommended.contains($0.id) }
+        let pending = candidates.filter { repoInfo[$0.id] == nil }
+        totalToCheck = pending.count
+        checkedCount = 0
+        unreachableCount = 0
+        updateCompatible(candidates)
+
+        var iterator = pending.makeIterator()
+        await withTaskGroup(of: (String, RepoInfo?).self) { group in
+            func addNext() {
+                guard let next = iterator.next() else { return }
+                group.addTask { (next.id, await Self.fetchInfo(next.id)) }
+            }
+            for _ in 0..<Self.maxConcurrent { addNext() }
+            while let (id, info) = await group.next() {
+                checkedCount += 1
+                if let info { repoInfo[id] = info } else { unreachableCount += 1 }
+                if checkedCount % 10 == 0 { updateCompatible(candidates) }
+                addNext()
+            }
+        }
+        updateCompatible(candidates)
+        if unreachableCount > 0 && unreachableCount == pending.count {
+            hubError = "Could not reach Hugging Face to check which models are compatible."
+        } else {
+            hubError = nil
+        }
+    }
+
+    private func updateCompatible(_ candidates: [HubModel]) {
+        compatibleModels = candidates.filter { repoInfo[$0.id]?.compatible == true }
     }
 
     /// Fetches file list and total size for one repo (once).
     func loadInfo(_ id: String) async {
         guard repoInfo[id] == nil, !infoRequests.contains(id) else { return }
         infoRequests.insert(id)
+        defer { infoRequests.remove(id) }
+        if let info = await Self.fetchInfo(id) { repoInfo[id] = info }
+    }
+
+    nonisolated private static func fetchInfo(_ id: String) async -> RepoInfo? {
         struct Entry: Decodable {
             struct LFS: Decodable { var size: Int64 }
             var path: String
             var size: Int64?
             var lfs: LFS?
         }
-        guard let url = URL(string: "https://huggingface.co/api/models/\(id)/tree/main") else { return }
-        if let (data, _) = try? await URLSession.shared.data(from: url),
-           let entries = try? JSONDecoder().decode([Entry].self, from: data) {
-            repoInfo[id] = RepoInfo(sizeBytes: entries.reduce(0) { $0 + ($1.lfs?.size ?? $1.size ?? 0) },
-                                    compatible: ModelCatalog.isCompatible(files: entries.map(\.path)))
-        }
-        infoRequests.remove(id)
+        guard let url = URL(string: "https://huggingface.co/api/models/\(id)/tree/main"),
+              let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let entries = try? JSONDecoder().decode([Entry].self, from: data) else { return nil }
+        return RepoInfo(sizeBytes: entries.reduce(0) { $0 + ($1.lfs?.size ?? $1.size ?? 0) },
+                        compatible: ModelCatalog.isCompatible(files: entries.map(\.path)))
     }
 
     func isDownloaded(_ id: String) -> Bool {
@@ -104,6 +165,7 @@ final class ModelStore {
                     self.downloads[id] = .failed(lastLine)
                 }
                 self.cacheVersion += 1
+                self.refreshDownloaded()
             }
         }
         do {
@@ -123,6 +185,7 @@ final class ModelStore {
     func delete(_ id: String) throws {
         try FileManager.default.removeItem(at: HFCache.repoDirectory(id))
         cacheVersion += 1
+        refreshDownloaded()
     }
 
     private func trackProgress(_ id: String) async {

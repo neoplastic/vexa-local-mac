@@ -13,6 +13,8 @@ struct VexaClient {
     var admin: URL
     var apiKey: String
     var adminToken: String
+    /// Injectable for tests; production uses the shared session.
+    var session: URLSession = .shared
 
     struct BotRequest: Encodable {
         var platform: String
@@ -56,6 +58,18 @@ struct VexaClient {
         return try await send("GET", url, body: Optional<String>.none, headers: ["X-API-Key": apiKey])
     }
 
+    /// Meeting rows (newest data included), used to find out why a bot failed.
+    func meetings() async throws -> [GatewayMeetingRow] {
+        struct Lossy: Decodable {
+            var row: GatewayMeetingRow?
+            init(from decoder: Decoder) throws { row = try? GatewayMeetingRow(from: decoder) }
+        }
+        struct Response: Decodable { var meetings: [Lossy] }
+        let r: Response = try await send("GET", gateway.appendingPathComponent("meetings"),
+                                         body: Optional<String>.none, headers: ["X-API-Key": apiKey])
+        return r.meetings.compactMap(\.row)
+    }
+
     /// Creates the user (or returns the existing one) and issues a new API key.
     func createAPIKey(email: String) async throws -> String {
         struct NewUser: Encodable { var email: String; var name: String; var max_concurrent_bots: Int }
@@ -65,8 +79,11 @@ struct VexaClient {
         let user: User = try await send("POST", admin.appendingPathComponent("admin/users"),
                                         body: NewUser(email: email, name: "Vexa Local app", max_concurrent_bots: 3),
                                         headers: headers)
-        let token: Token = try await send("POST", admin.appendingPathComponent("admin/users/\(user.id)/tokens"),
-                                          body: Optional<String>.none, headers: headers)
+        // Scopes: bot = send/stop bots, tx = read transcripts.
+        var comps = URLComponents(url: admin.appendingPathComponent("admin/users/\(user.id)/tokens"),
+                                  resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "scopes", value: "bot,tx")]
+        let token: Token = try await send("POST", comps.url!, body: Optional<String>.none, headers: headers)
         return token.token
     }
 
@@ -86,7 +103,7 @@ struct VexaClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: req)
+            (data, response) = try await session.data(for: req)
         } catch {
             throw APIError(status: 0, message: "Cannot reach Vexa at \(url.host ?? "localhost"):\(url.port ?? 0). Is the stack running?")
         }

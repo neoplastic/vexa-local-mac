@@ -77,10 +77,99 @@ final class MeetingParserTests: XCTestCase {
 
     func testRejectsOtherInput() {
         XCTAssertNil(MeetingParser.parse(""))
-        XCTAssertNil(MeetingParser.parse("https://zoom.us/j/123456789"))
+        XCTAssertNil(MeetingParser.parse("https://example.com/j/123456789"))
         XCTAssertNil(MeetingParser.parse("12345"))
         XCTAssertNil(MeetingParser.parse("https://example.com/meet/abc-defg-hij"))
         XCTAssertNil(MeetingParser.parse("abc-defg-hijk"))
+    }
+
+    func testZoomPlainLink() {
+        let p = MeetingParser.parse("https://zoom.us/j/85173157171")
+        XCTAssertEqual(p?.platform, .zoom)
+        XCTAssertEqual(p?.nativeMeetingId, "85173157171")
+        XCTAssertEqual(p?.meetingURL, "https://zoom.us/j/85173157171")
+        XCTAssertNil(p?.passcode)
+        XCTAssertNil(p?.teamsBaseHost)
+        XCTAssertEqual(p?.needsTeamsHost, false)
+        // Nine-digit ids and links pasted without a scheme (sent to Vexa as https).
+        XCTAssertEqual(MeetingParser.parse("zoom.us/j/123456789")?.meetingURL, "https://zoom.us/j/123456789")
+        XCTAssertEqual(MeetingParser.parse("http://zoom.us/j/123456789")?.meetingURL, "https://zoom.us/j/123456789")
+    }
+
+    func testZoomLinkWithPasscode() {
+        let url = "https://us05web.zoom.us/j/84335626851?pwd=aBcD1234.1"
+        let p = MeetingParser.parse(url)
+        XCTAssertEqual(p?.platform, .zoom)
+        XCTAssertEqual(p?.nativeMeetingId, "84335626851")
+        XCTAssertEqual(p?.passcode, "aBcD1234.1")
+        XCTAssertEqual(p?.meetingURL, url)
+    }
+
+    func testZoomVanitySubdomainAndGov() {
+        let p = MeetingParser.parse("https://acme.zoom.us/j/9876543210?pwd=xyz")
+        XCTAssertEqual(p?.platform, .zoom)
+        XCTAssertEqual(p?.nativeMeetingId, "9876543210")
+        XCTAssertEqual(p?.passcode, "xyz")
+        XCTAssertEqual(MeetingParser.parse("https://frbmeetings.zoomgov.com/j/1612345678")?.nativeMeetingId, "1612345678")
+    }
+
+    func testZoomWebClientForms() {
+        let p = MeetingParser.parse("https://app.zoom.us/wc/join/85173157171?pwd=secret")
+        XCTAssertEqual(p?.platform, .zoom)
+        XCTAssertEqual(p?.nativeMeetingId, "85173157171")
+        XCTAssertEqual(p?.passcode, "secret")
+        XCTAssertEqual(MeetingParser.parse("https://app.zoom.us/wc/85173157171/join")?.nativeMeetingId, "85173157171")
+        // /w/ links are sent as the equivalent /j/ link, which the bot knows how to open.
+        let w = MeetingParser.parse("https://acme.zoom.us/w/85173157171?pwd=s")
+        XCTAssertEqual(w?.nativeMeetingId, "85173157171")
+        XCTAssertEqual(w?.meetingURL, "https://acme.zoom.us/j/85173157171?pwd=s")
+    }
+
+    func testZoomHostedDomainNeedsPasscode() {
+        let url = "https://zoom-lfx.platform.linuxfoundation.org/meeting/96088138284?password=abc-123"
+        let p = MeetingParser.parse(url)
+        XCTAssertEqual(p?.platform, .zoom)
+        XCTAssertEqual(p?.nativeMeetingId, "96088138284")
+        XCTAssertEqual(p?.passcode, "abc-123")
+        XCTAssertNotNil(p?.note)
+        XCTAssertNil(MeetingParser.parse("https://example.com/meeting/96088138284"))
+        XCTAssertNil(MeetingParser.parse("https://10.0.0.1/j/96088138284?pwd=x"))
+    }
+
+    func testZoomInviteText() {
+        let text = """
+        Join Zoom Meeting
+        https://us02web.zoom.us/j/85173157171?pwd=Ab12Cd
+
+        Meeting ID: 851 7315 7171
+        Passcode: 123456
+        """
+        let p = MeetingParser.parse(text)
+        XCTAssertEqual(p?.platform, .zoom)
+        XCTAssertEqual(p?.nativeMeetingId, "85173157171")
+        XCTAssertEqual(p?.passcode, "Ab12Cd")
+    }
+
+    func testRejectedZoomLinks() {
+        for link in ["https://events.zoom.us/ejl/AbCdEf/12345678901",
+                     "https://zoom.us/my/jane.doe",
+                     "https://acme.zoom.us/webinar/register/WN_abcDEF123",
+                     "https://zoom.us/j/12345678",           // 8 digits
+                     "https://zoom.us/j/123456789012",       // 12 digits
+                     "https://zoom.us/s/85173157171"] {      // host start link
+            XCTAssertNil(MeetingParser.parse(link), link)
+            XCTAssertNotNil(MeetingParser.zoomRejection(link), link)
+        }
+        XCTAssertNil(MeetingParser.zoomRejection("https://zoom.us/j/85173157171"))
+        XCTAssertNil(MeetingParser.zoomRejection("https://example.com/whatever"))
+    }
+
+    func testBareNumbersStayTeams() {
+        let p = MeetingParser.parse("8517315717")
+        XCTAssertEqual(p?.platform, .teams)
+        XCTAssertEqual(p?.needsTeamsHost, true)
+        XCTAssertEqual(MeetingParser.parse("85173157171")?.platform, .teams)
+        XCTAssertNil(MeetingParser.parse("123456789"))
     }
 
     func testPasscodeValidation() {

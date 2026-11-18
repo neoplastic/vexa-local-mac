@@ -9,7 +9,7 @@ struct SessionsView: View {
         Group {
             if app.sessions.isEmpty {
                 ContentUnavailableView("No meetings yet", systemImage: "doc.text",
-                                       description: Text("Send a bot to a meeting and its transcript appears here."))
+                                       description: Text("Send a bot to a Teams meeting, or record a Google Meet or Zoom meeting with the browser extension. Transcripts appear here."))
             } else {
                 List(app.sessions) { SessionRow(session: $0) }
             }
@@ -29,7 +29,7 @@ struct SessionRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: session.platform == .googleMeet ? "video.fill" : "person.3.fill")
+            Image(systemName: session.platform.symbolName)
                 .font(.title2).foregroundStyle(.tint).frame(width: 28)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -37,8 +37,12 @@ struct SessionRow: View {
                     Text(session.meetingId).font(.body.monospaced()).foregroundStyle(.secondary)
                     StatusBadge(status: session.status)
                 }
-                Text("\(session.startedAt.formatted(date: .abbreviated, time: .shortened)) · \(session.segmentCount) segments")
+                Text("\(session.startedAt.formatted(date: .abbreviated, time: .shortened)) · \(session.segmentCount) segments · \(session.source.label)")
                     .font(.caption).foregroundStyle(.secondary)
+                if let why = session.failureReason, session.status == "failed" {
+                    Label(why, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                }
                 Text(URL(fileURLWithPath: session.filePath).lastPathComponent)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 if let err = session.lastError {
@@ -53,7 +57,7 @@ struct SessionRow: View {
                 Button("Show in Finder", systemImage: "folder") {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.filePath)])
                 }
-                if session.finished {
+                if session.finished || session.source == .browserExtension {
                     Button("Remove from list", systemImage: "xmark") { app.removeSession(session) }
                 } else {
                     Button("Leave meeting", systemImage: "stop.fill") { Task { await app.stopBot(session) } }
@@ -81,6 +85,7 @@ struct StatusBadge: View {
     private var label: String {
         switch status {
         case "awaiting_admission": return "waiting in lobby"
+        case "needs_help": return "needs help"
         default: return status.replacingOccurrences(of: "_", with: " ")
         }
     }
@@ -90,8 +95,19 @@ struct StatusBadge: View {
         case "active": return .green
         case "completed": return .blue
         case "failed": return .red
-        case "awaiting_admission": return .orange
+        case "awaiting_admission", "needs_help": return .orange
         default: return .secondary
+        }
+    }
+}
+
+extension MeetingPlatform {
+    /// SF Symbol shown next to a meeting of this platform.
+    var symbolName: String {
+        switch self {
+        case .googleMeet: return "video.fill"
+        case .teams: return "person.3.fill"
+        case .zoom: return "video.circle.fill"
         }
     }
 }

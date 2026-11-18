@@ -49,6 +49,9 @@ public enum TranscriptFormatter {
     /// Statuses after which the bot will not produce more transcript.
     public static let terminalStatuses: Set<String> = ["completed", "failed"]
 
+    /// Body of a transcript with no speech yet. Used to tell empty files from real ones.
+    public static let noSpeechMarker = "_No speech transcribed yet._"
+
     public struct Header: Sendable {
         public var platform: MeetingPlatform
         public var meetingId: String
@@ -81,7 +84,7 @@ public enum TranscriptFormatter {
                 if let a = lhs.absoluteStartTime, let b = rhs.absoluteStartTime, a != b { return a < b }
                 return lhs.start < rhs.start
             }
-        if ordered.isEmpty { return out + "_No speech transcribed yet._\n" }
+        if ordered.isEmpty { return out + noSpeechMarker + "\n" }
 
         var currentSpeaker: String?
         var paragraph: [String] = []
@@ -102,16 +105,27 @@ public enum TranscriptFormatter {
         return out
     }
 
+    /// Anything above this many seconds is a Unix epoch time (year 2001+), not an offset from the
+    /// meeting start. The bot API gives offsets; the desktop host gives absolute epoch seconds.
+    public static let epochThreshold: Double = 1_000_000_000
+
     /// Local clock time when the API gives an absolute time, else offset from the start.
     static func timestamp(_ seg: TranscriptSegment, timeZone: TimeZone) -> String {
         if let abs = seg.absoluteStartTime, let date = parseISO(abs) {
-            let f = DateFormatter()
-            f.dateFormat = "HH:mm:ss"
-            f.timeZone = timeZone
-            return f.string(from: date)
+            return clock(date, timeZone: timeZone)
         }
-        let t = Int(seg.start.rounded(.down))
+        if seg.start > epochThreshold {
+            return clock(Date(timeIntervalSince1970: seg.start), timeZone: timeZone)
+        }
+        let t = max(0, Int(seg.start.rounded(.down)))
         return String(format: "%02d:%02d:%02d", t / 3600, (t / 60) % 60, t % 60)
+    }
+
+    private static func clock(_ date: Date, timeZone: TimeZone) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        f.timeZone = timeZone
+        return f.string(from: date)
     }
 
     public static func parseISO(_ s: String) -> Date? {
@@ -125,10 +139,19 @@ public enum TranscriptFormatter {
     }
 
     /// File name like "2026-11-18 1430 Google Meet abc-defg-hij.md".
+    /// The meeting id is made safe for file names: Teams thread ids contain ":" and "@".
     public static func fileName(platform: MeetingPlatform, meetingId: String, startedAt: Date) -> String {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd HHmm"
-        let safeId = meetingId.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
-        return "\(f.string(from: startedAt)) \(platform.displayName) \(safeId).md"
+        return "\(f.string(from: startedAt)) \(platform.displayName) \(safeFileComponent(meetingId)).md"
+    }
+
+    /// Replaces characters that are awkward in file names and caps the length.
+    public static func safeFileComponent(_ id: String, maxLength: Int = 48) -> String {
+        let unsafe = CharacterSet(charactersIn: "/\\:@?*\"<>|%#").union(.controlCharacters)
+        var out = String(id.unicodeScalars.map { unsafe.contains($0) ? "-" : Character($0) })
+        out = out.trimmingCharacters(in: CharacterSet(charactersIn: ". -"))
+        if out.count > maxLength { out = String(out.prefix(maxLength)) }
+        return out.isEmpty ? "meeting" : out
     }
 }

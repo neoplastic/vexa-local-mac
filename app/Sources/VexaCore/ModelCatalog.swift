@@ -72,3 +72,42 @@ public enum HFCache {
         }
     }
 }
+
+/// A compatible MLX Whisper model found in the local cache.
+public struct CachedModel: Identifiable, Equatable, Sendable {
+    public var id: String { repoId }
+    public let repoId: String
+    public let bytes: Int64
+}
+
+extension HFCache {
+    /// Turns "models--org--name" into "org/name". Returns nil for other cache entries.
+    public static func repoId(fromDirectoryName name: String) -> String? {
+        let prefix = "models--"
+        guard name.hasPrefix(prefix) else { return nil }
+        let rest = String(name.dropFirst(prefix.count))
+        guard let range = rest.range(of: "--") else { return nil }
+        let org = rest[..<range.lowerBound]
+        let repo = rest[range.upperBound...]
+        guard !org.isEmpty, !repo.isEmpty else { return nil }
+        return "\(org)/\(repo)"
+    }
+
+    /// Every compatible MLX Whisper model in the cache, largest first.
+    /// Partial downloads and repos meant for other libraries are skipped.
+    public static func downloadedModels(hub: URL = hubDirectory) -> [CachedModel] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: hub.path)) ?? []
+        var result: [CachedModel] = []
+        for name in names {
+            guard let id = repoId(fromDirectoryName: name),
+                  id.localizedCaseInsensitiveContains("whisper"),
+                  isDownloaded(id, hub: hub) else { continue }
+            result.append(CachedModel(repoId: id, bytes: bytesOnDisk(id, hub: hub)))
+        }
+        return result.sorted { $0.bytes != $1.bytes ? $0.bytes > $1.bytes : $0.repoId < $1.repoId }
+    }
+
+    public static func totalBytes(_ models: [CachedModel]) -> Int64 {
+        models.reduce(0) { $0 + $1.bytes }
+    }
+}

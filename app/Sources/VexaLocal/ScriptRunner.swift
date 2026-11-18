@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// Runs the project's shell scripts (start/stop/whisper) and captures their output.
+/// Runs the project's shell scripts (start/stop/whisper) and setup commands, and captures their output.
 @MainActor @Observable
 final class ScriptRunner {
     var title = ""
@@ -20,6 +20,19 @@ final class ScriptRunner {
 
     @discardableResult
     func run(_ title: String, script: URL, arguments: [String] = [], in directory: URL) async -> Int32 {
+        await launch(title, executable: URL(fileURLWithPath: "/bin/bash"), arguments: [script.path] + arguments,
+                     name: script.lastPathComponent, in: directory)
+    }
+
+    /// Runs a command found on the app's PATH (e.g. `brew install …`, `git clone …`).
+    @discardableResult
+    func run(_ title: String, command: [String], in directory: URL) async -> Int32 {
+        await launch(title, executable: URL(fileURLWithPath: "/usr/bin/env"), arguments: command,
+                     name: command.first ?? "command", in: directory)
+    }
+
+    private func launch(_ title: String, executable: URL, arguments: [String], name: String,
+                        in directory: URL) async -> Int32 {
         guard !isRunning else { return -1 }
         self.title = title
         log = ""
@@ -27,8 +40,8 @@ final class ScriptRunner {
         lastExitCode = nil
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [script.path] + arguments
+        process.executableURL = executable
+        process.arguments = arguments
         process.currentDirectoryURL = directory
         process.environment = Self.shellEnvironment
         process.standardInput = FileHandle.nullDevice
@@ -52,7 +65,7 @@ final class ScriptRunner {
                 try process.run()
             } catch {
                 pipe.fileHandleForReading.readabilityHandler = nil
-                Task { @MainActor in self.log += "Could not run \(script.lastPathComponent): \(error.localizedDescription)\n" }
+                Task { @MainActor in self.log += "Could not run \(name): \(error.localizedDescription)\n" }
                 cont.resume(returning: -1)
             }
         }

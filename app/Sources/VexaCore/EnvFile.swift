@@ -9,7 +9,9 @@ public enum EnvFile {
 
     public static func parse(_ text: String) -> [String: String] {
         var out: [String: String] = [:]
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        // "\r\n" is a single Character in Swift, so normalise line endings first.
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+        for line in normalized.split(separator: "\n", omittingEmptySubsequences: false) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard !trimmed.hasPrefix("#"), let eq = trimmed.firstIndex(of: "=") else { continue }
             let key = String(trimmed[..<eq]).trimmingCharacters(in: .whitespaces)
