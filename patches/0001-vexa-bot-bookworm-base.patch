@@ -1,0 +1,13 @@
+diff --git a/services/vexa-bot/Dockerfile b/services/vexa-bot/Dockerfile
+index 0e6c4a7..56247ce 100644
+--- a/services/vexa-bot/Dockerfile
++++ b/services/vexa-bot/Dockerfile
+@@ -1,7 +1,7 @@
+ # ==============================================================================
+ # Stage 1: Build native addon (Zoom SDK wrapper)
+ # ==============================================================================
+-FROM --platform=linux/amd64 node:20-bullseye AS native-builder
++FROM --platform=linux/amd64 node:20-bookworm AS native-builder
+ 
+ # Install build dependencies
+ RUN apt-get update && apt-get install -y \
