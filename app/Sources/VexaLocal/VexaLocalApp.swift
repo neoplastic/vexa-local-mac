@@ -26,7 +26,9 @@ enum Pane: String, CaseIterable, Identifiable {
     case sessions = "Transcripts"
     case models = "Whisper models"
     case settings = "Settings"
-    var id: String { rawValue }
+    // Identity is the case itself, so List rows are tagged with Pane values
+    // that match the sidebar's Pane? selection.
+    var id: Self { self }
     var icon: String {
         switch self {
         case .join: return "person.badge.plus"
@@ -39,14 +41,18 @@ enum Pane: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @Environment(AppModel.self) private var app
-    @State private var pane: Pane? = .join
+    @AppStorage("vexa.pane") private var savedPane: String = Pane.join.rawValue
+    @State private var pane: Pane? = nil
 
     var body: some View {
         @Bindable var app = app
         NavigationSplitView {
-            List(Pane.allCases, selection: $pane) { p in
-                Label(p.rawValue, systemImage: p.icon).tag(p)
-                    .badge(p == .sessions ? app.sessions.filter { !$0.finished }.count : 0)
+            List(selection: $pane) {
+                ForEach(Pane.allCases) { p in
+                    Label(p.rawValue, systemImage: p.icon)
+                        .badge(p == .sessions ? app.sessions.filter { !$0.finished }.count : 0)
+                        .tag(p)
+                }
             }
             .safeAreaInset(edge: .bottom) { StatusPanel().padding(12) }
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
@@ -58,6 +64,8 @@ struct ContentView: View {
             case .settings: SettingsView()
             }
         }
+        .onAppear { if pane == nil { pane = Pane(rawValue: savedPane) ?? .join } }
+        .onChange(of: pane) { if let pane { savedPane = pane.rawValue } }
         .sheet(isPresented: $app.showLog) { LogSheet() }
     }
 }

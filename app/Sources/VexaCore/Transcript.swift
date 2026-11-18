@@ -114,7 +114,7 @@ public enum TranscriptFormatter {
         return String(format: "%02d:%02d:%02d", t / 3600, (t / 60) % 60, t % 60)
     }
 
-    static func parseISO(_ s: String) -> Date? {
+    public static func parseISO(_ s: String) -> Date? {
         let withFrac = ISO8601DateFormatter()
         withFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let plain = ISO8601DateFormatter()

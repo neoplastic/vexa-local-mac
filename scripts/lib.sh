@@ -45,7 +45,7 @@ ensure_colima() {
     ok "Colima is running"
   else
     info "Starting Colima (${COLIMA_CPUS:-6} CPU, ${COLIMA_MEMORY:-12} GB RAM, ${COLIMA_DISK:-100} GB disk)"
-    # --vz-rosetta: the meeting-bot image is linux/amd64 only.
+    # --vz-rosetta: only needed if you build the bot with BOT_PLATFORM=linux/amd64.
     colima start --profile "${COLIMA_PROFILE:-default}" \
       --cpu "${COLIMA_CPUS:-6}" --memory "${COLIMA_MEMORY:-12}" --disk "${COLIMA_DISK:-100}" \
       --vm-type vz --vz-rosetta

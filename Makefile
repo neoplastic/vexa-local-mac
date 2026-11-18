@@ -1,4 +1,4 @@
-.PHONY: help setup start stop stop-all restart status logs whisper-logs user test-whisper update app app-test
+.PHONY: help setup start stop stop-all restart status logs whisper-logs user test-whisper update app app-test bot-screenshots
 
 help:
 	@echo "make setup          One-time: fetch Vexa, write .env, download Whisper model, build images"
@@ -11,6 +11,7 @@ help:
 	@echo "make user EMAIL=x   Create a Vexa user and print an API key"
 	@echo "make test-whisper   Send a spoken test clip to Whisper"
 	@echo "make update         Rebuild Vexa images (after changing VEXA_REF)"
+	@echo "make bot-screenshots Copy the meeting bot's join screenshots to logs/"
 	@echo "make app            Build the Vexa Local macOS app into app/build/"
 	@echo "make app-test       Run the app's unit tests"
 
@@ -48,6 +49,11 @@ test-whisper:
 
 update:
 	@scripts/setup.sh
+
+bot-screenshots:
+	@mkdir -p logs/bot-screenshots
+	@docker run --rm -v vexa-bot-screenshots:/s:ro -v "$(CURDIR)/logs/bot-screenshots:/out" alpine:3.20 sh -c 'cp -a /s/. /out/ && ls -1t /out | head -20'
+	@echo "Copied to logs/bot-screenshots/"
 
 app:
 	@app/build-app.sh

@@ -66,8 +66,11 @@ ok "Model cached"
 
 ensure_colima
 
-info "Building the meeting-bot image (linux/amd64, runs under Rosetta; this is the slow one)"
-docker build --platform linux/amd64 -t "$BOT_IMAGE_NAME" -f "$VEXA_DIR/services/vexa-bot/Dockerfile" "$VEXA_DIR/services/vexa-bot"
+# Native ARM by default: Chromium handles Meet and Teams. linux/amd64 adds
+# Microsoft Edge for Teams but runs under Rosetta, which is much slower.
+BOT_PLATFORM="${BOT_PLATFORM:-linux/arm64}"
+info "Building the meeting-bot image ($BOT_PLATFORM; this is the slow one)"
+docker build --platform "$BOT_PLATFORM" -t "$BOT_IMAGE_NAME" -f "$VEXA_DIR/services/vexa-bot/Dockerfile" "$VEXA_DIR/services/vexa-bot"
 
 info "Building the Vexa service images"
 compose build

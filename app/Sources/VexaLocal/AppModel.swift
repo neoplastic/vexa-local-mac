@@ -132,7 +132,10 @@ final class AppModel {
             var tick = 0
             while !Task.isCancelled {
                 guard let self else { return }
-                if tick % 2 == 0 { await self.refreshStatus() }
+                if tick % 2 == 0 {
+                    await self.refreshStatus()
+                    if self.vexaState == .up { await self.adoptRunningBots() }
+                }
                 await self.pollSessions()
                 tick += 1
                 try? await Task.sleep(for: .seconds(3))
@@ -190,19 +193,47 @@ final class AppModel {
             passcode: meeting.platform == .teams && !pass.isEmpty ? pass : nil,
             meeting_url: meeting.meetingURL,
             teams_base_host: host)
-        let created = try await client.createBot(request)
+        let status: String
+        do {
+            status = try await client.createBot(request).status
+        } catch let error as APIError where error.status == 0 || error.status >= 500 {
+            // A slow container start can time out upstream even though the bot
+            // launched. If Vexa now lists it, track it instead of reporting failure.
+            await adoptRunningBots()
+            if let existing = sessions.first(where: {
+                !$0.finished && $0.platform == meeting.platform && $0.meetingId == meeting.nativeMeetingId
+            }) { return existing }
+            throw error
+        }
+        return try startTracking(platform: meeting.platform, meetingId: meeting.nativeMeetingId,
+                                 startedAt: Date(), status: status)
+    }
 
+    @discardableResult
+    private func startTracking(platform: MeetingPlatform, meetingId: String, startedAt: Date,
+                               status: String) throws -> Session {
         try FileManager.default.createDirectory(atPath: outputDirectory, withIntermediateDirectories: true)
-        let startedAt = Date()
         let file = URL(fileURLWithPath: outputDirectory)
-            .appendingPathComponent(TranscriptFormatter.fileName(platform: meeting.platform,
-                                                                 meetingId: meeting.nativeMeetingId,
+            .appendingPathComponent(TranscriptFormatter.fileName(platform: platform, meetingId: meetingId,
                                                                  startedAt: startedAt))
-        let session = Session(platform: meeting.platform, meetingId: meeting.nativeMeetingId,
-                              startedAt: startedAt, filePath: file.path, status: created.status)
+        let session = Session(platform: platform, meetingId: meetingId, startedAt: startedAt,
+                              filePath: file.path, status: status)
         sessions.insert(session, at: 0)
         writeTranscript(for: session, segments: [])
         return session
+    }
+
+    /// Tracks any bot Vexa is running that this app isn't following yet
+    /// (e.g. started from the API, the MCP server, or after a timed-out request).
+    func adoptRunningBots() async {
+        guard !apiKey.isEmpty, let bots = try? await client.runningBots() else { return }
+        for bot in bots {
+            guard let p = bot.platform.flatMap(MeetingPlatform.init(rawValue:)),
+                  let id = bot.native_meeting_id, !id.isEmpty,
+                  !sessions.contains(where: { !$0.finished && $0.platform == p && $0.meetingId == id }) else { continue }
+            let started = bot.created_at.flatMap(TranscriptFormatter.parseISO) ?? Date()
+            _ = try? startTracking(platform: p, meetingId: id, startedAt: started, status: "requested")
+        }
     }
 
     func stopBot(_ session: Session) async {

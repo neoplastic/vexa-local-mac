@@ -105,8 +105,10 @@ Only repos with `weights.npz` or `weights.safetensors` work with mlx-whisper. Re
 
 | Patch | Why |
 |---|---|
-| `0001-vexa-bot-bookworm-base.patch` | Debian 11 (bullseye) reached end of life in 2026 and its security repo returns 404s. The bot's build stage now uses Debian 12. |
+| `0001-vexa-bot-bookworm-any-arch.patch` | The bot's first build stage used Debian 11 (end of life in 2026, its repo now returns 404s) and was pinned to amd64. It now uses Debian 12 and builds for any architecture. |
 | `0002-fix-missing-python-deps.patch` | admin-api was missing `httpx`, calendar-service was missing `email-validator`, and mcp needs `mcp<2` to work with `fastapi-mcp` 0.4. |
+| `0003-api-gateway-longer-timeout.patch` | The gateway gave up on internal requests after 5 seconds. Starting a bot can take longer, which showed up as "Service Unavailable (HTTP 503)" even though the bot launched. |
+| `0004-bot-shm-and-screenshots.patch` | Gives bot containers 1 GB of shared memory (Chromium can hang with Docker's 64 MB default). Also keeps the bot's join screenshots in the `vexa-bot-screenshots` volume; `make bot-screenshots` copies them out. |
 
 `compose.mac.yml` also turns off MinIO by default, because the `minio/mc` image is no longer on Docker Hub. Recording storage uses local disk (`STORAGE_BACKEND=local`). Recordings are off by default anyway.
 
@@ -114,7 +116,7 @@ Only repos with `weights.npz` or `weights.safetensors` work with mlx-whisper. Re
 
 - **Platforms:** Google Meet and Microsoft Teams. Zoom needs Zoom's proprietary Meeting SDK, which isn't included. FaceTime isn't supported.
 - **Guests:** the bot joins as a guest. Organisations that block anonymous guests will block it.
-- **Teams on Apple Silicon:** the bot image is `linux/amd64` because Teams needs Edge. It runs under Rosetta in Colima, which works but uses more CPU than a native image.
+- **Native ARM bot:** upstream builds the bot as `linux/amd64` so it can include Microsoft Edge for Teams. Here it builds natively for ARM, and Teams uses the bundled Chromium (the bot falls back to it automatically). Everything else (Colima, all Vexa services, Postgres, Redis, Whisper) is ARM too, so nothing runs under Rosetta. To get Edge back, set `BOT_PLATFORM=linux/amd64` in `.env` and run `make setup`. That bot runs under Rosetta and is much slower.
 
 ## Troubleshooting
 

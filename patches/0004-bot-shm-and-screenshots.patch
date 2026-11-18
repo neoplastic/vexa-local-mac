@@ -1,0 +1,16 @@
+diff --git a/services/bot-manager/app/orchestrator_utils.py b/services/bot-manager/app/orchestrator_utils.py
+index cd03767..0cbb3cd 100644
+--- a/services/bot-manager/app/orchestrator_utils.py
++++ b/services/bot-manager/app/orchestrator_utils.py
+@@ -305,6 +305,11 @@ async def start_bot_container(
+         "HostConfig": {
+             "NetworkMode": DOCKER_NETWORK,
+             "AutoRemove": True,
++            # Chromium needs more than Docker's 64 MB default /dev/shm, or pages
++            # can hang mid-render (worse under Rosetta).
++            "ShmSize": int(os.getenv("BOT_SHM_SIZE_BYTES", str(1024 * 1024 * 1024))),
++            # Keep the bot's join-step screenshots after the container is removed.
++            "Binds": [f"{os.getenv('BOT_SCREENSHOTS_VOLUME', 'vexa-bot-screenshots')}:/app/storage/screenshots"],
+         },
+     }
+ 

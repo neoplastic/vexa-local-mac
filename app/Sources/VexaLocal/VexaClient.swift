@@ -38,6 +38,19 @@ struct VexaClient {
         let _: EmptyResponse = try await send("DELETE", url, body: Optional<String>.none, headers: ["X-API-Key": apiKey])
     }
 
+    struct RunningBot: Decodable {
+        var platform: String?
+        var native_meeting_id: String?
+        var created_at: String?
+    }
+
+    func runningBots() async throws -> [RunningBot] {
+        struct Response: Decodable { var running_bots: [RunningBot] }
+        let r: Response = try await send("GET", gateway.appendingPathComponent("bots/status"),
+                                         body: Optional<String>.none, headers: ["X-API-Key": apiKey])
+        return r.running_bots
+    }
+
     func transcript(platform: MeetingPlatform, meetingId: String) async throws -> TranscriptResponse {
         let url = gateway.appendingPathComponent("transcripts/\(platform.rawValue)/\(meetingId)")
         return try await send("GET", url, body: Optional<String>.none, headers: ["X-API-Key": apiKey])
